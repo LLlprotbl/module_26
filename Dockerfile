@@ -1,14 +1,28 @@
-FROM golang AS compiling_stage
-RUN mkdir -p /go/src/website
-WORKDIR /go/src/website
-ADD main.go .
-ADD go.mod .
-RUN go install .
+# ==================== Stage 1: Build ====================
+FROM golang:1.21-alpine AS builder
 
-FROM alpine:latest
-LABEL version="1.0.0"
-LABEL maintainer="Ivan Ivanov<test@test.ru>"
-WORKDIR /root/
-COPY --from=compiling_stage /go/bin/website .
-ENTRYPOINT ./website
-EXPOSE 8080
+# Устанавливаем рабочую директорию
+WORKDIR /app
+
+# Копируем зависимости (для лучшего кэширования)
+COPY go.mod ./
+RUN go mod download
+
+# Копируем исходный код
+COPY . .
+
+# Компилируем статический бинарник (без зависимостей от glibc)
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o pipeline main.go
+
+# ==================== Stage 2: Runtime ====================
+FROM alpine:latest 
+
+# Метаданные
+LABEL version="1.0.0" \
+      maintainer="Test Student<test@test.ru>"
+
+# Копируем бинарник из builder-стадии
+COPY --from=builder /app/pipeline /pipeline
+
+# Запускаем приложение (JSON-формат!)
+ENTRYPOINT ["/pipeline"]
