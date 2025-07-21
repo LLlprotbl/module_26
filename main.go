@@ -76,6 +76,7 @@ func read(input chan<- int, done <-chan struct{}) {
 			var u int
 			_, err := fmt.Scanf("%d\n", &u)
 			if err != nil {
+				fmt.Fprintln(os.Stderr, "Ошибка: введите целое число")
 				logChan <- fmt.Sprintf("Ошибка ввода: %v", err)
 				continue
 			}
@@ -171,11 +172,17 @@ func printBuffer(buffer *Buffer, ticker *time.Ticker, done <-chan struct{}) {
 
 func logger() {
 	defer func() {
-		logChan <- "Логгер завершает работу"
+		log.Println("Логгер завершает работу")
 	}()
 
 	for msg := range logChan {
-		log.Println(msg)
+		select {
+		case <-time.After(100 * time.Millisecond):
+			log.Println("Таймаут записи лога")
+			continue
+		default:
+			log.Println(msg)
+		}
 	}
 }
 
@@ -184,26 +191,52 @@ func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 	log.SetPrefix("PIPELINE: ")
 
-	go logger()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		logger()
+	}()
 
 	done := make(chan struct{})
 	input := make(chan int)
-	go read(input, done)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		read(input, done)
+	}()
 
 	filterNeg := make(chan int)
-	go filterNegative(input, filterNeg, done)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		filterNegative(input, filterNeg, done)
+	}()
 
 	filterThreeCh := make(chan int)
-	go filterThree(filterNeg, filterThreeCh, done)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		filterThree(filterNeg, filterThreeCh, done)
+	}()
 
 	size := 10
 	buffer := NewBuffer(size)
-	go writeBuffer(filterThreeCh, buffer, done)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		writeBuffer(filterThreeCh, buffer, done)
+	}()
 
 	interval := 5
 	ticker := time.NewTicker(time.Second * time.Duration(interval))
 	defer ticker.Stop()
-	go printBuffer(buffer, ticker, done)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		printBuffer(buffer, ticker, done)
+	}()
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -212,7 +245,8 @@ func main() {
 	fmt.Println("\nПолучен сигнал завершения работы")
 	close(done)
 
-	time.Sleep(time.Second * time.Duration(interval+1))
+	// Ждем завершения всех горутин
+	wg.Wait()
 
 	finalBuf := buffer.Get()
 	if len(finalBuf) > 0 {
@@ -220,7 +254,5 @@ func main() {
 		fmt.Println("Финальные данные буфера:", finalBuf)
 	}
 
-	// Даем время на завершение логгера
-	time.Sleep(100 * time.Millisecond)
 	close(logChan)
 }
